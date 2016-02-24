@@ -225,6 +225,10 @@ sunxi_rtc_settime(device_t dev, struct timespec *ts)
 	struct clocktime ct;
 	uint32_t clk = 0, rdate, rtime;
 
+	/* RTC resolution is 1 sec */
+	if (ts->tv_nsec >= HALF_OF_SEC_NS) ts->tv_sec++;
+	ts->tv_nsec = 0;
+
 	clock_ts_to_ct(ts, &ct);
 	
 	if ((ct.year < YEAR_MIN) || (ct.year > YEAR_MAX)) {
@@ -241,10 +245,6 @@ sunxi_rtc_settime(device_t dev, struct timespec *ts)
 		return (EINVAL);
 	}
 	rtc_write_4(sc, TMR_RTC_TIME_REG, 0);
-
-	/* RTC resolution is 1 sec */
-	if (ts->tv_nsec >= HALF_OF_SEC_NS) ts->tv_sec++;
-	ts->tv_nsec = 0;
 
 	rdate = SET_DAY_VALUE(ct.day) | SET_MON_VALUE(ct.mon) | \
 		SET_YEAR_VALUE(ct.year - YEAR_OFFSET) | 
