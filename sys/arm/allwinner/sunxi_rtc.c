@@ -57,13 +57,13 @@ __FBSDID("$FreeBSD$");
 #define TRM_LOSC_MAGIC			0x16aa0000
 #define TMR_LOSC_BUSY_MASK		0x00000380
 
-#define YEAR_MIN				(sc->sun7i ? 1970 : 2010)
-#define YEAR_MAX				(sc->sun7i ? 2100 : 2073)
-#define YEAR_OFFSET				(sc->sun7i ? 1900 : 2010)
-#define YEAR_MASK				(sc->sun7i ? 0xff : 0x3f)
-#define LEAP_BIT				(sc->sun7i ? 24 : 22)
+#define YEAR_MIN			(sc->sun7i ? 1970 : 2010)
+#define YEAR_MAX			(sc->sun7i ? 2100 : 2073)
+#define YEAR_OFFSET			(sc->sun7i ? 1900 : 2010)
+#define YEAR_MASK			(sc->sun7i ? 0xff : 0x3f)
+#define LEAP_BIT			(sc->sun7i ? 24 : 22)
 
-#define TIME_MASK				0x001f3f3f
+#define TIME_MASK			0x001f3f3f
 
 #define GET_SEC_VALUE(x)		((x)  & 0x0000003f)
 #define GET_MIN_VALUE(x)		(((x) & 0x00003f00) >> 8)
@@ -81,7 +81,7 @@ __FBSDID("$FreeBSD$");
 #define SET_HOUR_VALUE(x)		(((x) & 0x0000001f) << 16)
 
 #define	HALF_OF_SEC_NS			500000000
-#define RTC_TIMEOUT				70
+#define RTC_TIMEOUT			70
 
 #define rtc_read_4(sc, reg) \
 	bus_space_read_4((sc)->bst, (sc)->bsh, (reg))
@@ -99,14 +99,14 @@ static struct ofw_compat_data compat_data[] = {
 };
 
 static struct resource_spec sunxi_rtc_spec[] = {
-	{ SYS_RES_MEMORY,	0,	RF_ACTIVE },
+	{ SYS_RES_MEMORY, 0, RF_ACTIVE },
 	{ -1, 0 }
 };
 struct sunxi_rtc_softc {
-	struct resource				*res[1];
-	bus_space_tag_t				bst;
-	bus_space_handle_t			bsh;
-	u_int						sun7i;
+	struct resource			*res[1];
+	bus_space_tag_t			bst;
+	bus_space_handle_t		bsh;
+	u_int				sun7i;
 };
 
 static int sunxi_rtc_probe(device_t dev);

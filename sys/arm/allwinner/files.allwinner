@@ -16,5 +16,6 @@ arm/allwinner/allwinner_machdep.c	standard
 arm/allwinner/axp209.c			optional	axp209
 arm/allwinner/if_emac.c			optional	emac
 arm/allwinner/sunxi_dma_if.m		standard
+arm/allwinner/sunxi_rtc.c		standard
 dev/iicbus/twsi/a10_twsi.c		optional	twsi
 #arm/allwinner/console.c		standard
