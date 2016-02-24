@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) _____________
+ * Copyright (c) 2016 Vladimir Belian <fate10@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
