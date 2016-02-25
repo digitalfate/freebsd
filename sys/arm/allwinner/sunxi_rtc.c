@@ -47,23 +47,25 @@ __FBSDID("$FreeBSD$");
 
 #include "clock_if.h"
 
-#define TMR_LOSC_CTRL_REG		0x00
-#define TMR_RTC_DATE_REG		0x04
-#define TMR_RTC_TIME_REG		0x08
-
-#define TMR_LOSC_OSC_SRC		0x00000001
-#define TMR_LOSC_GSM			0x00000008
-#define TMR_LOSC_AUTO_SW_EN		0x00004000
-#define TRM_LOSC_MAGIC			0x16aa0000
-#define TMR_LOSC_BUSY_MASK		0x00000380
-
-#define YEAR_MIN			(sc->sun7i ? 1970 : 2010)
-#define YEAR_MAX			(sc->sun7i ? 2100 : 2073)
-#define YEAR_OFFSET			(sc->sun7i ? 1900 : 2010)
-#define YEAR_MASK			(sc->sun7i ? 0xff : 0x3f)
-#define LEAP_BIT			(sc->sun7i ? 24 : 22)
+#define LOSC_CTRL_REG			0x00
+#define RTC_DATE_REG			0x04
+#define RTC_TIME_REG			0x08
 
 #define TIME_MASK			0x001f3f3f
+
+#define LOSC_OSC_SRC			0x00000001
+#define LOSC_GSM			0x00000008
+#define LOSC_AUTO_SW_EN			0x00004000
+#define LOSC_MAGIC			0x16aa0000
+#define LOSC_BUSY_MASK			0x00000380
+
+#define IS_SUN7I 			(allwinner_soc_family() == ALLWINNERSOC_SUN7I)
+
+#define YEAR_MIN			(IS_SUN7I ? 1970 : 2010)
+#define YEAR_MAX			(IS_SUN7I ? 2100 : 2073)
+#define YEAR_OFFSET			(IS_SUN7I ? 1900 : 2010)
+#define YEAR_MASK			(IS_SUN7I ? 0xff : 0x3f)
+#define LEAP_BIT			(IS_SUN7I ? 24 : 22)
 
 #define GET_SEC_VALUE(x)		((x)  & 0x0000003f)
 #define GET_MIN_VALUE(x)		(((x) & 0x00003f00) >> 8)
@@ -80,15 +82,14 @@ __FBSDID("$FreeBSD$");
 #define SET_MIN_VALUE(x)		(((x) & 0x0000003f) << 8)
 #define SET_HOUR_VALUE(x)		(((x) & 0x0000001f) << 16)
 
-#define	HALF_OF_SEC_NS			500000000
+#define HALF_OF_SEC_NS			500000000
+#define RTC_RES_US			1000000
 #define RTC_TIMEOUT			70
 
-#define rtc_read_4(sc, reg) \
-	bus_space_read_4((sc)->bst, (sc)->bsh, (reg))
-#define rtc_write_4(sc, reg, val) \
-	bus_space_write_4((sc)->bst, (sc)->bsh, (reg), (val))
+#define RTC_READ(sc, reg) 		bus_read_4((sc)->res, (reg))
+#define RTC_WRITE(sc, reg, val)		bus_write_4((sc)->res, (reg), (val))
 
-#define	IS_LEAP_YEAR(y) \
+#define IS_LEAP_YEAR(y) \
 	(((y) % 400) == 0 || (((y) % 100) != 0 && ((y) % 4) == 0))
 
 
@@ -98,15 +99,8 @@ static struct ofw_compat_data compat_data[] = {
 	{ NULL, false }
 };
 
-static struct resource_spec sunxi_rtc_spec[] = {
-	{ SYS_RES_MEMORY, 0, RF_ACTIVE },
-	{ -1, 0 }
-};
 struct sunxi_rtc_softc {
-	struct resource			*res[1];
-	bus_space_tag_t			bst;
-	bus_space_handle_t		bsh;
-	u_int				sun7i;
+	struct resource			*res;
 };
 
 static int sunxi_rtc_probe(device_t dev);
@@ -140,7 +134,6 @@ EARLY_DRIVER_MODULE(sunxi_rtc, simplebus, sunxi_rtc_driver, sunxi_rtc_devclass, 
 static int
 sunxi_rtc_probe(device_t dev)
 {
-	struct sunxi_rtc_softc *sc  = device_get_softc(dev);
 	u_int soc_family;
 
 	if (!ofw_bus_search_compatible(dev, compat_data)->ocd_data)
@@ -150,9 +143,8 @@ sunxi_rtc_probe(device_t dev)
 	if (soc_family != ALLWINNERSOC_SUN7I && 
 		soc_family != ALLWINNERSOC_SUN4I) return (ENXIO);
 		
-	sc->sun7i = (soc_family == ALLWINNERSOC_SUN7I) ? 1 : 0;
-
 	device_set_desc(dev, "Allwinner RTC");
+
 	return (BUS_PROBE_DEFAULT);
 }
 
@@ -161,30 +153,29 @@ sunxi_rtc_attach(device_t dev)
 {
 	struct sunxi_rtc_softc *sc  = device_get_softc(dev);
 	uint32_t val;
+	int rid = 0;
 
-	if (bus_alloc_resources(dev, sunxi_rtc_spec, sc->res)) {
+	sc->res = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &rid, RF_ACTIVE);
+	if (!sc->res) {
 		device_printf(dev, "could not allocate resources\n");
 		return (ENXIO);
 	}
-
-	sc->bst = rman_get_bustag(sc->res[0]);
-	sc->bsh = rman_get_bushandle(sc->res[0]);
-
-	val = rtc_read_4(sc, TMR_LOSC_CTRL_REG);
-	val &= ~TMR_LOSC_AUTO_SW_EN;
-	val |= TRM_LOSC_MAGIC | TMR_LOSC_GSM | TMR_LOSC_OSC_SRC;
-	rtc_write_4(sc, TMR_LOSC_CTRL_REG, val);
+	
+	val = RTC_READ(sc, LOSC_CTRL_REG);
+	val &= ~LOSC_AUTO_SW_EN;
+	val |= LOSC_MAGIC | LOSC_GSM | LOSC_OSC_SRC;
+	RTC_WRITE(sc, LOSC_CTRL_REG, val);
 	
 	DELAY(100);
 	
-	val = rtc_read_4(sc, TMR_LOSC_CTRL_REG);
-	if (!(val & TMR_LOSC_OSC_SRC)) {
-		bus_release_resources(dev, sunxi_rtc_spec, sc->res);
+	val = RTC_READ(sc, LOSC_CTRL_REG);
+	if (!(val & LOSC_OSC_SRC)) {
+		bus_release_resource(dev, SYS_RES_MEMORY, rid, sc->res);
 		device_printf(dev, "set LOSC to external failed\n");
 		return (ENXIO);
 	}
 	
-	clock_register(dev, 1000000);
+	clock_register(dev, RTC_RES_US);
 	
 	return (0);
 }
@@ -196,11 +187,11 @@ sunxi_rtc_gettime(device_t dev, struct timespec *ts)
 	struct clocktime ct;
 	uint32_t rdate, rtime;
 
-	rdate = rtc_read_4(sc, TMR_RTC_DATE_REG);
-	rtime = rtc_read_4(sc, TMR_RTC_TIME_REG);
+	rdate = RTC_READ(sc, RTC_DATE_REG);
+	rtime = RTC_READ(sc, RTC_TIME_REG);
 	
 	if ((rtime & TIME_MASK) == 0)
-		rdate = rtc_read_4(sc, TMR_RTC_DATE_REG);
+		rdate = RTC_READ(sc, RTC_DATE_REG);
 
 	ct.sec = GET_SEC_VALUE(rtime);
 	ct.min = GET_MIN_VALUE(rtime);
@@ -212,21 +203,19 @@ sunxi_rtc_gettime(device_t dev, struct timespec *ts)
 	/* RTC resolution is 1 sec */
 	ct.nsec = 0;
 	
-	return clock_ct_to_ts(&ct, ts);
+	return (clock_ct_to_ts(&ct, ts));
 }
-
-#define TMR_LOSC_BUSY \
-	(rtc_read_4(sc, TMR_LOSC_CTRL_REG) & TMR_LOSC_BUSY_MASK)
 
 static int
 sunxi_rtc_settime(device_t dev, struct timespec *ts)
 {
 	struct sunxi_rtc_softc *sc  = device_get_softc(dev);
 	struct clocktime ct;
-	uint32_t clk = 0, rdate, rtime;
+	uint32_t clk, rdate, rtime;
 
 	/* RTC resolution is 1 sec */
-	if (ts->tv_nsec >= HALF_OF_SEC_NS) ts->tv_sec++;
+	if (ts->tv_nsec >= HALF_OF_SEC_NS)
+		ts->tv_sec++;
 	ts->tv_nsec = 0;
 
 	clock_ts_to_ct(ts, &ct);
@@ -235,39 +224,41 @@ sunxi_rtc_settime(device_t dev, struct timespec *ts)
 		device_printf(dev, "could not set time, year out of range\n");
 		return (EINVAL);
 	}
-	/* 
-	 * write all zeros to the time register to avoid unxpected 
-	 * date increment
-	 */
-	while (TMR_LOSC_BUSY && (clk++ < RTC_TIMEOUT)) DELAY(1);
-	if (clk >= RTC_TIMEOUT) {
-		device_printf(dev, "could not set time, RTC busy\n");
-		return (EINVAL);
-	}
-	rtc_write_4(sc, TMR_RTC_TIME_REG, 0);
 
-	rdate = SET_DAY_VALUE(ct.day) | SET_MON_VALUE(ct.mon) | \
+	for (clk = 0; RTC_READ(sc, LOSC_CTRL_REG) & LOSC_BUSY_MASK; clk++) {
+		if (clk > RTC_TIMEOUT) {
+			device_printf(dev, "could not set time, RTC busy\n");
+			return (EINVAL);
+		}
+		DELAY(1);
+	}
+	/* reset time register to avoid unexpected date increment */
+	RTC_WRITE(sc, RTC_TIME_REG, 0);
+
+	rdate = SET_DAY_VALUE(ct.day) | SET_MON_VALUE(ct.mon) |
 		SET_YEAR_VALUE(ct.year - YEAR_OFFSET) | 
 		SET_LEAP_VALUE(IS_LEAP_YEAR(ct.year));
 			
-	rtime = SET_SEC_VALUE(ct.sec) | SET_MIN_VALUE(ct.min) | \
+	rtime = SET_SEC_VALUE(ct.sec) | SET_MIN_VALUE(ct.min) |
 		SET_HOUR_VALUE(ct.hour);
 
-	clk = 0;
-	while (TMR_LOSC_BUSY && (clk++ < RTC_TIMEOUT)) DELAY(1);
-	if (clk >= RTC_TIMEOUT) {
-		device_printf(dev, "could not set date, RTC busy\n");
-		return (EINVAL);
+	for (clk = 0; RTC_READ(sc, LOSC_CTRL_REG) & LOSC_BUSY_MASK; clk++) {
+		if (clk > RTC_TIMEOUT) {
+			device_printf(dev, "could not set date, RTC busy\n");
+			return (EINVAL);
+		}
+		DELAY(1);
 	}
-	rtc_write_4(sc, TMR_RTC_DATE_REG, rdate);
+	RTC_WRITE(sc, RTC_DATE_REG, rdate);
 
-	clk = 0;
-	while (TMR_LOSC_BUSY && (clk++ < RTC_TIMEOUT)) DELAY(1);
-	if (clk >= RTC_TIMEOUT) {
-		device_printf(dev, "could not set time, RTC busy\n");
-		return (EINVAL);
+	for (clk = 0; RTC_READ(sc, LOSC_CTRL_REG) & LOSC_BUSY_MASK; clk++) {
+		if (clk > RTC_TIMEOUT) {
+			device_printf(dev, "could not set time, RTC busy\n");
+			return (EINVAL);
+		}
+		DELAY(1);
 	}
-	rtc_write_4(sc, TMR_RTC_TIME_REG, rtime);
+	RTC_WRITE(sc, RTC_TIME_REG, rtime);
 
 	DELAY(RTC_TIMEOUT);
 
