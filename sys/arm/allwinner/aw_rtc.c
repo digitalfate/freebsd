@@ -105,6 +105,7 @@ struct aw_rtc_softc {
 
 static int aw_rtc_probe(device_t dev);
 static int aw_rtc_attach(device_t dev);
+static int aw_rtc_detach(device_t dev);
 
 static int aw_rtc_gettime(device_t dev, struct timespec *ts);
 static int aw_rtc_settime(device_t dev, struct timespec *ts);
@@ -112,6 +113,7 @@ static int aw_rtc_settime(device_t dev, struct timespec *ts);
 static device_method_t aw_rtc_methods[] = {
 	DEVMETHOD(device_probe,		aw_rtc_probe),
 	DEVMETHOD(device_attach,	aw_rtc_attach),
+	DEVMETHOD(device_detach,	aw_rtc_detach),
 
 	DEVMETHOD(clock_gettime,	aw_rtc_gettime),
 	DEVMETHOD(clock_settime,	aw_rtc_settime),
@@ -134,18 +136,12 @@ EARLY_DRIVER_MODULE(aw_rtc, simplebus, aw_rtc_driver, aw_rtc_devclass, 0, 0,
 static int
 aw_rtc_probe(device_t dev)
 {
-	u_int soc_family;
-
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
 
 	if (!ofw_bus_search_compatible(dev, compat_data)->ocd_data)
 		return (ENXIO);
 
-	soc_family = allwinner_soc_family();
-	if (soc_family != ALLWINNERSOC_SUN7I && 
-		soc_family != ALLWINNERSOC_SUN4I) return (ENXIO);
-		
 	device_set_desc(dev, "Allwinner RTC");
 
 	return (BUS_PROBE_DEFAULT);
@@ -181,6 +177,13 @@ aw_rtc_attach(device_t dev)
 	clock_register(dev, RTC_RES_US);
 	
 	return (0);
+}
+
+static int
+aw_rtc_detach(device_t dev)
+{
+	/* can't support detach, since there's no clock_unregister function */
+	return (EBUSY);
 }
 
 static int
