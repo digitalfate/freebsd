@@ -1,5 +1,6 @@
 /*-
  * Copyright (c) 1998 Michael Smith <msmith@freebsd.org>
+ * Copyright (c) 2016 Vladimir Belian <fate10@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -29,13 +30,15 @@ __FBSDID("$FreeBSD$");
 
 #include <stand.h>
 #include <string.h>
+#ifdef LOADER_ZFS_SUPPORT
+#include <libzfs.h>
+#endif
 
 #include "bootstrap.h"
 #include "disk.h"
 #include "libuboot.h"
 
-static int uboot_parsedev(struct uboot_devdesc **dev, const char *devspec,
-    const char **path);
+static int uboot_parsedev(struct uboot_devdesc **, const char *, const char **);
 
 /*
  * Point (dev) at an allocated device specifier for the device matching the
@@ -53,14 +56,13 @@ uboot_getdev(void **vdev, const char *devspec, const char **path)
 	 * device, go with the current device.
 	 */
 	if ((devspec == NULL) || (devspec[0] == '/') ||
-	    (strchr(devspec, ':') == NULL)) {
+		(strchr(devspec, ':') == NULL)) {
 
-		if (((rv = uboot_parsedev(dev, getenv("currdev"), NULL)) == 0)
-		    && (path != NULL))
-		*path = devspec;
+		rv = uboot_parsedev(dev, getenv("currdev"), NULL);
+		if ((rv == 0) && (path != NULL))
+			*path = devspec;
 		return(rv);
 	}
-
 	/*
 	 * Try to parse the device name off the beginning of the devspec.
 	 */
@@ -82,101 +84,101 @@ uboot_getdev(void **vdev, const char *devspec, const char **path)
  *
  */
 static int
-uboot_parsedev(struct uboot_devdesc **dev, const char *devspec,
-    const char **path)
+uboot_parsedev(struct uboot_devdesc **dev, const char *devspec, const char **path)
 {
 	struct uboot_devdesc *idev;
 	struct devsw *dv;
-	char *cp;
 	const char *np;
-	int i, unit, err;
+	char *cp;
+	int i, err = 0;
 
 	/* minimum length check */
 	if (strlen(devspec) < 2)
 		return(EINVAL);
 
 	/* look for a device that matches */
-	for (i = 0, dv = NULL; devsw[i] != NULL; i++) {
-		if (!strncmp(devspec, devsw[i]->dv_name,
-		    strlen(devsw[i]->dv_name))) {
-			dv = devsw[i];
+	for (i = 0; devsw[i] != NULL; i++) {
+		dv = devsw[i];
+		if (!strncmp(devspec, dv->dv_name, strlen(dv->dv_name)))
 			break;
-		}
 	}
 	if (dv == NULL)
-		return(ENOENT);
-	idev = malloc(sizeof(struct uboot_devdesc));
-	err = 0;
-	np = (devspec + strlen(dv->dv_name));
+		return (ENOENT);
+	if ((idev = malloc(sizeof(struct uboot_devdesc))) == NULL)
+		return (ENOMEM);
+
+	np = devspec + strlen(dv->dv_name);
 
 	switch(dv->dv_type) {
-	case DEVT_NONE:
+#ifdef LOADER_ZFS_SUPPORT
+	case DEVT_ZFS:
+		err = zfs_parsedev((struct zfs_devdesc *)idev, np, path);
 		break;
-
+#endif
 #ifdef LOADER_DISK_SUPPORT
 	case DEVT_DISK:
 		err = disk_parsedev((struct disk_devdesc *)idev, np, path);
-		if (err != 0)
-			goto fail;
 		break;
 #endif
-
 	case DEVT_NET:
-		unit = 0;
-
+		idev->d_unit = 0;
 		if (*np && (*np != ':')) {
-			/* get unit number if present */
-			unit = strtol(np, &cp, 0);
+			idev->d_unit = strtol(np, &cp, 0);
 			if (cp == np) {
-				err = EUNIT;
-				goto fail;
+				idev->d_unit = -1;
+				err = EINVAL;
+				break;
 			}
+		}
+		else {
+		    cp = (char *)np;
 		}
 		if (*cp && (*cp != ':')) {
 			err = EINVAL;
-			goto fail;
+			break;
 		}
-		idev->d_unit = unit;
-
 		if (path != NULL)
 			*path = (*cp == 0) ? cp : cp + 1;
 		break;
-
+	case DEVT_NONE:
+		free(idev);
+		return (0);
 	default:
 		err = EINVAL;
-		goto fail;
+	}
+	if (err) {
+		free(idev);
+		return (err);
 	}
 	idev->d_dev = dv;
 	idev->d_type = dv->dv_type;
-	if (dev == NULL) {
-		free(idev);
-	} else {
+
+	if (dev != NULL)
 		*dev = idev;
-	}
+	else
+		free(idev);
+
 	return (0);
-
-fail:
-	free(idev);
-	return (err);
 }
-
 
 char *
 uboot_fmtdev(void *vdev)
 {
 	struct uboot_devdesc *dev = (struct uboot_devdesc *)vdev;
-	static char buf[128];
+	static char buf[UB_MAXNAMELEN];
 
 	switch(dev->d_type) {
+#ifdef LOADER_ZFS_SUPPORT
+	case DEVT_ZFS:
+	        return (zfs_fmtdev(vdev));
+#endif
 	case DEVT_NONE:
 		strcpy(buf, "(no device)");
 		break;
-
 	case DEVT_DISK:
 #ifdef LOADER_DISK_SUPPORT
 		return (disk_fmtdev(vdev));
 #endif
-
 	case DEVT_NET:
 		sprintf(buf, "%s%d:", dev->d_dev->dv_name, dev->d_unit);
 		break;

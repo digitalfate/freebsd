@@ -1,6 +1,7 @@
 /*-
  * Copyright (c) 2000-2001 Benno Rice
  * Copyright (c) 2007 Semihalf, Rafal Jaworowski <raj@semihalf.com>
+ * Copyright (c) 2016 Vladimir Belian <fate10@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -80,7 +81,7 @@ struct uboot_softc {
 	uint8_t		sc_rxbuf[ETHER_MAX_LEN];
 	uint8_t		sc_txbuf[ETHER_MAX_LEN + PKTALIGN];
 	uint8_t		*sc_txbufp;
-	int		sc_handle;	/* device handle for ub_dev_xxx */
+	struct device_info *sc_dinfo;	/* device handle for ub_dev_xxx */
 };
 
 static struct uboot_softc uboot_softc;
@@ -210,25 +211,16 @@ net_match(struct netif *nif, void *machdep_hint)
 static int
 net_probe(struct netif *nif, void *machdep_hint)
 {
-	struct device_info *di;
-	int i;
+	int i = 0;
 
-	for (i = 0; i < devs_no; i++)
-		if ((di = ub_dev_get(i)) != NULL)
-			if (di->type == DEV_TYP_NET)
-				break;
-
-	if (i == devs_no) {
+	if ((uboot_softc.sc_dinfo = ub_dev_get(DEV_TYP_NET, &i)) == NULL)
 		printf("net_probe: no network devices found, maybe not"
-		    " enumerated yet..?\n");
+			" enumerated yet..?\n");
 		return (-1);
-	}
 
 #if defined(NETIF_DEBUG)
-	printf("net_probe: network device found: %d\n", i);
+	printf("net_probe: network device found: %d\n", i - 1);
 #endif
-	uboot_softc.sc_handle = i;
-
 	return (0);
 }
 
@@ -258,7 +250,7 @@ net_put(struct iodesc *desc, void *pkt, size_t len)
 
 	memcpy(sc->sc_txbufp, pkt, len);
 
-	rv = ub_dev_send(sc->sc_handle, sc->sc_txbufp, sendlen);
+	rv = ub_dev_send(sc->sc_dinfo, sc->sc_txbufp, sendlen);
 
 #if defined(NETIF_DEBUG)
 	printf("net_put: ub_send returned %d\n", rv);
@@ -284,7 +276,7 @@ net_get(struct iodesc *desc, void *pkt, size_t len, time_t timeout)
 #endif
 	t = getsecs();
 	do {
-		err = ub_dev_recv(sc->sc_handle, sc->sc_rxbuf, len, &rlen);
+		err = ub_dev_recv(sc->sc_dinfo, sc->sc_rxbuf, len, &rlen);
 
 		if (err != 0) {
 			printf("net_get: ub_dev_recv() failed, error=%d\n",
@@ -316,18 +308,16 @@ net_init(struct iodesc *desc, void *machdep_hint)
 {
 	struct netif *nif = desc->io_netif;
 	struct uboot_softc *sc;
-	struct device_info *di;
 	int err;
 
 	sc = nif->nif_devdata = &uboot_softc;
 
-	if ((err = ub_dev_open(sc->sc_handle)) != 0)
+	if ((err = ub_dev_open(sc->sc_dinfo)) != 0)
 		panic("%s%d: initialisation failed with error %d\n",
 		    nif->nif_driver->netif_bname, nif->nif_unit, err);
 
 	/* Get MAC address */
-	di = ub_dev_get(sc->sc_handle);
-	memcpy(desc->myea, di->di_net.hwaddr, 6);
+	memcpy(desc->myea, sc->sc_dinfo->di_net.hwaddr, 6);
 	if (memcmp (desc->myea, "\0\0\0\0\0\0", 6) == 0) {
 		panic("%s%d: empty ethernet address!",
 		    nif->nif_driver->netif_bname, nif->nif_unit);
@@ -356,7 +346,7 @@ net_end(struct netif *nif)
 	struct uboot_softc *sc = nif->nif_devdata;
 	int err;
 
-	if ((err = ub_dev_close(sc->sc_handle)) != 0)
+	if ((err = ub_dev_close(sc->sc_dinfo)) != 0)
 		panic("%s%d: net_end failed with error %d\n",
 		    nif->nif_driver->netif_bname, nif->nif_unit, err);
 }

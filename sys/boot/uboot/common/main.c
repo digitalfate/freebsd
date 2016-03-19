@@ -2,6 +2,7 @@
  * Copyright (c) 2000 Benno Rice <benno@jeamland.net>
  * Copyright (c) 2000 Stephane Potvin <sepotvin@videotron.ca>
  * Copyright (c) 2007-2008 Semihalf, Rafal Jaworowski <raj@semihalf.com>
+ * Copyright (c) 2016 Vladimir Belian <fate10@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,29 +38,38 @@ __FBSDID("$FreeBSD$");
 #include "glue.h"
 #include "libuboot.h"
 
+#ifdef LOADER_ZFS_SUPPORT
+#include <libzfs.h>
+#endif
+
 #ifndef nitems
 #define	nitems(x)	(sizeof((x)) / sizeof((x)[0]))
 #endif
 
-struct uboot_devdesc currdev;
+#ifdef DEBUG
+#define	PRINT_DEBUG_INFO()	do { \
+	printf("signature:\n"); \
+	printf("  version\t= %d\n", sig->version); \
+	printf("  checksum\t= 0x%08x\n", sig->checksum); \
+	printf("  sc entry\t= 0x%08x\n", sig->syscall); \
+	printf("\naddresses info:\n"); \
+	printf(" _etext (sdata)   = 0x%08x\n", (uint32_t)_etext); \
+	printf(" _edata           = 0x%08x\n", (uint32_t)_edata); \
+	printf(" __sbss_start     = 0x%08x\n", (uint32_t)__sbss_start); \
+	printf(" __sbss_end       = 0x%08x\n", (uint32_t)__sbss_end); \
+	printf(" __bss_start      = 0x%08x\n", (uint32_t)__bss_start); \
+	printf(" _end             = 0x%08x\n", (uint32_t)_end); \
+	printf(" syscall entry    = 0x%08x\n", (uint32_t)syscall_ptr); \
+	printf(" uboot_heap_start = 0x%08x\n", (uint32_t)uboot_heap_start); \
+	printf(" uboot_heap_end   = 0x%08x\n", (uint32_t)uboot_heap_end); } while (0)
+#else
+#define	PRINT_DEBUG_INFO()
+#endif
+
 struct arch_switch archsw;		/* MI/MD interface boundary */
-int devs_no;
 
 uintptr_t uboot_heap_start;
 uintptr_t uboot_heap_end;
-
-struct device_type { 
-	const char *name;
-	int type;
-} device_types[] = {
-	{ "disk", DEV_TYP_STOR },
-	{ "ide",  DEV_TYP_STOR | DT_STOR_IDE },
-	{ "mmc",  DEV_TYP_STOR | DT_STOR_MMC },
-	{ "sata", DEV_TYP_STOR | DT_STOR_SATA },
-	{ "scsi", DEV_TYP_STOR | DT_STOR_SCSI },
-	{ "usb",  DEV_TYP_STOR | DT_STOR_USB },
-	{ "net",  DEV_TYP_NET }
-};
 
 extern char end[];
 extern char bootprog_name[];
@@ -78,31 +88,71 @@ extern unsigned char _end[];
 extern int command_fdt_internal(int argc, char *argv[]);
 #endif
 
-static void
-dump_sig(struct api_signature *sig)
-{
-#ifdef DEBUG
-	printf("signature:\n");
-	printf("  version\t= %d\n", sig->version);
-	printf("  checksum\t= 0x%08x\n", sig->checksum);
-	printf("  sc entry\t= 0x%08x\n", sig->syscall);
-#endif
-}
+#ifdef LOADER_ZFS_SUPPORT
+static uint64_t zfs_pools[UB_MAX_DEV];
 
 static void
-dump_addr_info(void)
+uboot_zfs_probe(void)
 {
-#ifdef DEBUG
-	printf("\naddresses info:\n");
-	printf(" _etext (sdata) = 0x%08x\n", (uint32_t)_etext);
-	printf(" _edata         = 0x%08x\n", (uint32_t)_edata);
-	printf(" __sbss_start   = 0x%08x\n", (uint32_t)__sbss_start);
-	printf(" __sbss_end     = 0x%08x\n", (uint32_t)__sbss_end);
-	printf(" __sbss_start   = 0x%08x\n", (uint32_t)__bss_start);
-	printf(" _end           = 0x%08x\n", (uint32_t)_end);
-	printf(" syscall entry  = 0x%08x\n", (uint32_t)syscall_ptr);
-#endif
+	char dname[SPECNAMELEN + 1];
+	uint64_t id;
+	int p, n = 0, i = 0, maxp = 0;
+
+	bzero(&zfs_pools, sizeof(zfs_pools));
+
+	while (ub_dev_get(DEV_TYP_STOR, &i) != NULL) {
+		snprintf(dname, sizeof(dname), "disk%d:", n++);
+		id = 0;
+		if (zfs_probe_dev(dname, &id) == 0) {
+			if (id == 0)
+				continue;
+				
+			/* skip pool guid duplicates if found */
+			for (p = 0; (p < maxp) && (zfs_pools[p] != id); p++) ;
+			if (p < maxp)
+				continue;
+
+			zfs_pools[maxp++] = id;
+		}
+	}
 }
+
+static const char *
+probe_zfs(const char *dstr)
+{
+	struct zfs_devdesc dev;
+	char *p = NULL, *buf;
+	int i, l;
+
+	if ((dstr != NULL) && (strncasecmp(dstr, "zfs", 3) != 0))
+		return (NULL);
+
+	if ((dstr != NULL) && ((dstr = strchr(dstr, ' ')) != NULL))
+		dstr++;
+
+	for (i = 0; zfs_pools[i] != 0; i++) {
+		bzero(&dev, sizeof(dev));
+		dev.d_dev = &zfs_dev;
+		dev.d_type = dev.d_dev->dv_type;
+		dev.pool_guid = zfs_pools[i];
+		buf = zfs_fmtdev(&dev);
+
+		p = strchr(buf, ':') + 1;
+		l = strcspn(p, ":/");
+		if ((buf != NULL) && ((dstr == NULL) || (*dstr == '\0') ||
+			((l == strlen(dstr)) && (strncmp(dstr, p, l) == 0))))
+			break;
+		buf = NULL;
+	}
+	if (buf != NULL) {
+		init_zfs_bootenv(buf);
+		return (zfs_fmtdev(&dev));
+	}
+	printf("could not find %s zfs pool\n",
+		(((dstr == NULL) || (*dstr == '\0'))) ? "any" : dstr);
+	return (NULL);
+}
+#endif
 
 static uint64_t
 memsize(struct sys_info *si, int flags)
@@ -133,266 +183,204 @@ meminfo(void)
 		size = memsize(si, t[i]);
 		if (size > 0)
 			printf("%s: %juMB\n", ub_mem_type(t[i]),
-			    (uintmax_t)(size / 1024 / 1024));
+			        (uintmax_t)(size / 1024 / 1024));
 	}
 }
 
-static const char *
-get_device_type(const char *devstr, int *devtype)
+static struct devsw *
+search_devsw(int type)
 {
 	int i;
-	int namelen;
-	struct device_type *dt;
 
-	if (devstr) {
-		for (i = 0; i < nitems(device_types); i++) {
-			dt = &device_types[i];
-			namelen = strlen(dt->name);
-			if (strncmp(dt->name, devstr, namelen) == 0) {
-				*devtype = dt->type;
-				return (devstr + namelen);
-			}
-		}
-		printf("Unknown device type '%s'\n", devstr);
-	}
-
-	*devtype = -1;
+	for (i = 0; devsw[i] != NULL; i++) 
+		if (devsw[i]->dv_type == type)
+			return (devsw[i]);
 	return (NULL);
 }
 
-static const char *
-device_typename(int type)
-{
-	int i;
-
-	for (i = 0; i < nitems(device_types); i++)
-		if (device_types[i].type == type)
-			return (device_types[i].name);
-
-	return ("<unknown>");
-}
-
 /*
- * Parse a device string into type, unit, slice and partition numbers. A
- * returned value of -1 for type indicates a search should be done for the
- * first loadable device, otherwise a returned value of -1 for unit
- * indicates a search should be done for the first loadable device of the
- * given type.
+ * Parse a device string into unit, slice and partition numbers.
  *
  * The returned values for slice and partition are interpreted by
  * disk_open().
  *
- * Valid device strings:                     For device types:
+ * Valid device strings:
  *
- * <type_name>                               DEV_TYP_STOR, DEV_TYP_NET
- * <type_name><unit>                         DEV_TYP_STOR, DEV_TYP_NET
- * <type_name><unit>:                        DEV_TYP_STOR, DEV_TYP_NET
- * <type_name><unit>:<slice>                 DEV_TYP_STOR
- * <type_name><unit>:<slice>.                DEV_TYP_STOR
- * <type_name><unit>:<slice>.<partition>     DEV_TYP_STOR
- *
- * For valid type names, see the device_types array, above.
+ * <unit>
+ * <unit>:
+ * <unit>:<slice>
+ * <unit>:<slice>.
+ * <unit>:<slice>.<partition>
  *
  * Slice numbers are 1-based.  0 is a wildcard.
  */
-static void
-get_load_device(int *type, int *unit, int *slice, int *partition)
+static int
+decode_devstr(const char *dstr, int *unit, int *slice, int *partition)
 {
-	char *devstr;
 	const char *p;
 	char *endp;
 
-	*type = -1;
-	*unit = -1;
-	*slice = 0;
-	*partition = -1;
-
-	devstr = ub_env_get("loaderdev");
-	if (devstr == NULL) {
-		printf("U-Boot env: loaderdev not set, will probe all devices.\n");
-		return;
-	}
-	printf("U-Boot env: loaderdev='%s'\n", devstr);
-
-	p = get_device_type(devstr, type);
-
 	/* Ignore optional spaces after the device name. */
-	while (*p == ' ')
-		p++;
+	while (*dstr == ' ')
+		dstr++;
 
-	/* Unknown device name, or a known name without unit number.  */
-	if ((*type == -1) || (*p == '\0')) {
-		return;
+	/* No unit number present. */
+	if (*dstr == '\0') {
+		return (-1);
 	}
-
 	/* Malformed unit number. */
-	if (!isdigit(*p)) {
-		*type = -1;
-		return;
-	}
+	if (!isdigit(*dstr))
+		return (0);
 
-	/* Guaranteed to extract a number from the string, as *p is a digit. */
-	*unit = strtol(p, &endp, 10);
-	p = endp;
+	/* Guaranteed to extract a number from the string, as *dstr is a digit. */
+	*unit = strtol(dstr, &endp, 10);
+	dstr = endp;
 
-	/* Known device name with unit number and nothing else. */
-	if (*p == '\0') {
-		return;
-	}
+	/* Unit number and nothing else. */
+	if (*dstr == '\0')
+		return (1);
 
 	/* Device string is malformed beyond unit number. */
-	if (*p != ':') {
-		*type = -1;
-		*unit = -1;
-		return;
-	}
-
-	p++;
+	if (*dstr != ':')
+		return (0);
+	dstr++;
 
 	/* No slice and partition specification. */
-	if ('\0' == *p )
-		return;
+	if (*dstr == '\0')
+		return (1);
 
-	/* Only DEV_TYP_STOR devices can have a slice specification. */
-	if (!(*type & DEV_TYP_STOR)) {
-		*type = -1;
-		*unit = -1;
-		return;
-	}
-
-	*slice = strtoul(p, &endp, 10);
+	*slice = strtoul(dstr, &endp, 10);
 
 	/* Malformed slice number. */
-	if (p == endp) {
-		*type = -1;
-		*unit = -1;
-		*slice = 0;
-		return;
-	}
-
-	p = endp;
+	if (dstr == endp)
+		return (0);
+	dstr = endp;
 	
 	/* No partition specification. */
-	if (*p == '\0')
-		return;
+	if (*dstr == '\0')
+		return (1);
 
 	/* Device string is malformed beyond slice number. */
-	if (*p != '.') {
-		*type = -1;
-		*unit = -1;
-		*slice = 0;
-		return;
-	}
-
-	p++;
+	if (*dstr != '.')
+		return (0);
+	dstr++;
 
 	/* No partition specification. */
-	if (*p == '\0')
-		return;
+	if (*dstr == '\0')
+		return (1);
 
-	*partition = strtol(p, &endp, 10);
-	p = endp;
+	*partition = strtol(dstr, &endp, 10);
 
-	/*  Full, valid device string. */
+	/* Full, valid device string. */
 	if (*endp == '\0')
-		return;
+		return (1);
 
 	/* Junk beyond partition number. */
-	*type = -1;
-	*unit = -1;
-	*slice = 0;
-	*partition = -1;
+	return (0);
 } 
 
 static void
-print_disk_probe_info()
+print_disk_probe_info(struct uboot_devdesc dev)
 {
-	char slice[32];
-	char partition[32];
 
-	if (currdev.d_disk.slice > 0)
-		sprintf(slice, "%d", currdev.d_disk.slice);
+	printf("  Checking unit=%d ", dev.d_unit);
+	
+	if (dev.d_disk.slice > 0)
+		printf("slice=%d ", dev.d_disk.slice);
 	else
-		strcpy(slice, "<auto>");
-
-	if (currdev.d_disk.partition >= 0)
-		sprintf(partition, "%d", currdev.d_disk.partition);
+		printf("slice=<auto> ");
+	if (dev.d_disk.partition >= 0)
+		printf("partition=%d...", dev.d_disk.partition);
 	else
-		strcpy(partition, "<auto>");
-
-	printf("  Checking unit=%d slice=%s partition=%s...",
-	    currdev.d_unit, slice, partition);
-
+		printf("partition=<auto>...");
 }
 
-static int
-probe_disks(int devidx, int load_type, int load_unit, int load_slice, 
-    int load_partition)
+static const char *
+probe_disks(const char *dstr)
 {
-	int open_result, unit;
+	struct device_info *di;
+	struct uboot_devdesc dev;
 	struct open_file f;
+	int stlist[] = {
+		DT_STOR_IDE, DT_STOR_SCSI, DT_STOR_USB, DT_STOR_MMC,
+		DT_STOR_SATA
+	};
+	int type = DEV_TYP_STOR;
+	int nunits = 0, res = -1, valid = -1;
+	int i, v;
+	char *s;
 
-	currdev.d_disk.slice = load_slice;
-	currdev.d_disk.partition = load_partition;
+	bzero(&dev, sizeof(dev));
 
-	f.f_devdata = &currdev;
-	open_result = -1;
+	if ((dev.d_dev = search_devsw(DEVT_DISK)) == NULL)
+		return (NULL);
 
-	if (load_type == -1) {
-		printf("  Probing all disk devices...\n");
-		/* Try each disk in succession until one works.  */
-		for (currdev.d_unit = 0; currdev.d_unit < UB_MAX_DEV;
-		     currdev.d_unit++) {
-			print_disk_probe_info();
-			open_result = devsw[devidx]->dv_open(&f, &currdev);
-			if (open_result == 0) {
-				printf(" good.\n");
-				return (0);
-			}
-			printf("\n");
-		}
-		return (-1);
-	}
-
-	if (load_unit == -1) {
-		printf("  Probing all %s devices...\n", device_typename(load_type));
-		/* Try each disk of given type in succession until one works. */
-		for (unit = 0; unit < UB_MAX_DEV; unit++) {
-			currdev.d_unit = uboot_diskgetunit(load_type, unit);
-			if (currdev.d_unit == -1)
+	/* parse devstr if any */
+	if (dstr != NULL) {
+		for (i = 0; i < nitems(stlist); i++) {
+			v = strlen(s = ub_stor_type(stlist[i]));
+			if (strncasecmp(dstr, s, v) == 0) {
+				type = stlist[i];
 				break;
-			print_disk_probe_info();
-			open_result = devsw[devidx]->dv_open(&f, &currdev);
-			if (open_result == 0) {
-				printf(" good.\n");
-				return (0);
 			}
-			printf("\n");
 		}
-		return (-1);
+		/* if device type is none above may be it's genereal disk type */
+		if ((strncasecmp(dstr, "disk", 4) != 0) && (type == DEV_TYP_STOR))
+			return (NULL);
+		if ((res = decode_devstr(&dstr[v], &dev.d_unit,
+			&dev.d_disk.slice, &dev.d_disk.partition)) == 0)
+			return (NULL);
 	}
+	/* calculate real unit address, offset and number of units */
+	for (v = i = 0; (di = ub_dev_get(DEV_TYP_STOR, &i)) != NULL; v++)
+		if ((di->type & type) && (nunits++ == dev.d_unit))
+			valid = dev.d_unit += v;
+	if (valid == -1)
+		return (NULL);
 
-	if ((currdev.d_unit = uboot_diskgetunit(load_type, load_unit)) != -1) {
-		print_disk_probe_info();
-		open_result = devsw[devidx]->dv_open(&f,&currdev);
-		if (open_result == 0) {
+	printf("Found U-Boot device: %s\n", dev.d_dev->dv_name);
+	dev.d_type = dev.d_dev->dv_type;
+	dev.d_disk.partition = -1;
+	f.f_devdata = &dev;
+
+	/* probe only one device unit if unit number is specified */
+	if (res > 0)
+		nunits = 1;
+	while (nunits--) {
+		print_disk_probe_info(dev);
+		if ((dev.d_dev)->dv_open(&f, &dev) == 0) {
 			printf(" good.\n");
-			return (0);
+			return (uboot_fmtdev(&dev));
 		}
 		printf("\n");
+		dev.d_unit++;
 	}
+	return (NULL);
+}
 
-	printf("  Requested disk type/unit/slice/partition not found\n");
-	return (-1);
+static const char *
+probe_net(const char *dstr)
+{
+	struct uboot_devdesc dev;
+	int i;
+
+	bzero(&dev, sizeof(dev));
+
+	if ((dstr != NULL) && (strncasecmp(dstr, "net", 3) != 0))
+		return (NULL);
+	if ((dev.d_dev = search_devsw(DEVT_NET)) == NULL)
+		return (NULL);
+	dev.d_type = dev.d_dev->dv_type;
+
+	return (uboot_fmtdev(&dev));
 }
 
 int
 main(int argc, char **argv)
 {
 	struct api_signature *sig = NULL;
-	int load_type, load_unit, load_slice, load_partition;
-	int i;
-	const char *ldev;
+	int i, devs_no;
+	const char *devstr, *ldev;
 
 	/*
 	 * We first check if a command line argument was passed to us containing
@@ -422,7 +410,11 @@ main(int argc, char **argv)
 	 * alloc() is usable. The stack is buried inside us, so this is safe.
 	 */
 	uboot_heap_start = round_page((uintptr_t)end);
+#ifndef LOADER_ZFS_SUPPORT
 	uboot_heap_end   = uboot_heap_start + 512 * 1024;
+#else
+	uboot_heap_end   = uboot_heap_start + 2 * 1024 * 1024;
+#endif
 	setheap((void *)uboot_heap_start, (void *)uboot_heap_end);
 
 	/*
@@ -436,65 +428,8 @@ main(int argc, char **argv)
 	printf("(%s, %s)\n", bootprog_maker, bootprog_date);
 	printf("\n");
 
-	dump_sig(sig);
-	dump_addr_info();
-
+	PRINT_DEBUG_INFO();
 	meminfo();
-
-	/*
-	 * Enumerate U-Boot devices
-	 */
-	if ((devs_no = ub_dev_enum()) == 0)
-		panic("no U-Boot devices found");
-	printf("Number of U-Boot devices: %d\n", devs_no);
-
-	get_load_device(&load_type, &load_unit, &load_slice, &load_partition);
-
-	/*
-	 * March through the device switch probing for things.
-	 */
-	for (i = 0; devsw[i] != NULL; i++) {
-
-		if (devsw[i]->dv_init == NULL)
-			continue;
-		if ((devsw[i]->dv_init)() != 0)
-			continue;
-
-		printf("Found U-Boot device: %s\n", devsw[i]->dv_name);
-
-		currdev.d_dev = devsw[i];
-		currdev.d_type = currdev.d_dev->dv_type;
-		currdev.d_unit = 0;
-
-		if ((load_type == -1 || (load_type & DEV_TYP_STOR)) &&
-		    strcmp(devsw[i]->dv_name, "disk") == 0) {
-			if (probe_disks(i, load_type, load_unit, load_slice, 
-			    load_partition) == 0)
-				break;
-		}
-
-		if ((load_type == -1 || (load_type & DEV_TYP_NET)) &&
-		    strcmp(devsw[i]->dv_name, "net") == 0)
-			break;
-	}
-
-	/*
-	 * If we couldn't find a boot device, return an error to u-boot.
-	 * U-boot may be running a boot script that can try something different
-	 * so returning an error is better than forcing a reboot.
-	 */
-	if (devsw[i] == NULL) {
-		printf("No boot device found!\n");
-		return (0xbadef1ce);
-	}
-
-	ldev = uboot_fmtdev(&currdev);
-	env_setenv("currdev", EV_VOLATILE, ldev, uboot_setcurrdev, env_nounset);
-	env_setenv("loaddev", EV_VOLATILE, ldev, env_noset, env_nounset);
-	printf("Booting from %s\n", ldev);
-
-	setenv("LINES", "24", 1);		/* optional */
-	setenv("prompt", "loader>", 1);
 
 	archsw.arch_loadaddr = uboot_loadaddr;
 	archsw.arch_getdev = uboot_getdev;
@@ -502,12 +437,61 @@ main(int argc, char **argv)
 	archsw.arch_copyout = uboot_copyout;
 	archsw.arch_readin = uboot_readin;
 	archsw.arch_autoload = uboot_autoload;
+#ifdef LOADER_ZFS_SUPPORT
+	/* Note this needs to be set before ZFS init. */
+	archsw.arch_zfs_probe = uboot_zfs_probe;
+#endif
+	/*
+	 * Enumerate U-Boot devices
+	 */
+	if ((devs_no = ub_dev_enum()) == 0)
+		panic("no U-Boot devices found");
+	printf("Number of U-Boot devices: %d\n", devs_no);
+
+	devstr = ub_env_get("loaderdev");
+	if (devstr == NULL)
+		printf("U-Boot env: loaderdev not set, will probe all devices.\n");
+	else
+		printf("U-Boot env: loaderdev='%s'\n", devstr);
+
+	/*
+	 * March through the device switch probing for things.
+	 */
+	for (i = 0; devsw[i] != NULL; i++) 
+		if (devsw[i]->dv_init != NULL)
+			(devsw[i]->dv_init)();
+
+	do {
+#ifdef LOADER_ZFS_SUPPORT
+		if ((ldev = probe_zfs(devstr)) != NULL)
+			break;
+#endif
+		if ((ldev = probe_disks(devstr)) != NULL)
+			break;
+
+		if ((ldev = probe_net(devstr)) != NULL)
+			break;
+		/*
+		 * If we couldn't find a boot device, return an error to u-boot.
+		 * U-boot may be running a boot script that can try something
+		 * different so returning an error is better than forcing a reboot.
+		 */
+		printf("No boot device found!\n");
+		return (0xbadef1ce);
+	} while (0);
+
+	printf("Booting from %s\n", ldev);
+
+	env_setenv("currdev", EV_VOLATILE, ldev, uboot_setcurrdev, env_nounset);
+	env_setenv("loaddev", EV_VOLATILE, ldev, env_noset, env_nounset);
+	
+	setenv("LINES", "24", 1);		/* optional */
+	setenv("prompt", "loader>", 1);
 
 	interact(NULL);				/* doesn't return */
 
 	return (0);
 }
-
 
 COMMAND_SET(heap, "heap", "show heap usage", command_heap);
 static int
@@ -515,7 +499,7 @@ command_heap(int argc, char *argv[])
 {
 
 	printf("heap base at %p, top at %p, used %td\n", end, sbrk(0),
-	    sbrk(0) - end);
+		sbrk(0) - end);
 
 	return (CMD_OK);
 }
@@ -536,16 +520,17 @@ COMMAND_SET(devinfo, "devinfo", "show U-Boot devices", command_devinfo);
 static int
 command_devinfo(int argc, char *argv[])
 {
-	int i;
+	struct device_info *di;
+	int i = 0;
 
-	if ((devs_no = ub_dev_enum()) == 0) {
+	if (ub_dev_enum() == 0) {
 		command_errmsg = "no U-Boot devices found!?";
 		return (CMD_ERROR);
 	}
-	
 	printf("U-Boot devices:\n");
-	for (i = 0; i < devs_no; i++) {
-		ub_dump_di(i);
+	while ((di = ub_dev_get(DEV_TYP_NET | DEV_TYP_STOR, &i)) != NULL) {
+		printf("device info (%d):\n", i - 1);
+		ub_dump_di(di);
 		printf("\n");
 	}
 	return (CMD_OK);
@@ -561,7 +546,6 @@ command_sysinfo(int argc, char *argv[])
 		command_errmsg = "could not retrieve U-Boot sys info!?";
 		return (CMD_ERROR);
 	}
-
 	printf("U-Boot system info:\n");
 	ub_dump_si(si);
 	return (CMD_OK);
@@ -602,7 +586,6 @@ handle_uboot_env_var(enum ubenv_action action, const char * var)
 			var = &var[len + 1];
 		}
 	}
-
 	/*
 	 * If the user prepended "uboot." (which is how they usually see these
 	 * names) strip it off as a convenience.
@@ -610,13 +593,11 @@ handle_uboot_env_var(enum ubenv_action action, const char * var)
 	if (strncmp(var, "uboot.", 6) == 0) {
 		var = &var[6];
 	}
-
 	/* If there is no variable name left, punt. */
 	if (var[0] == 0) {
 		printf("empty variable name\n");
 		return;
 	}
-
 	val = ub_env_get(var);
 	if (action == UBENV_SHOW) {
 		if (val == NULL)
@@ -648,7 +629,6 @@ command_ubenv(int argc, char *argv[])
 		command_errmsg = "usage: 'ubenv <import|show> [var ...]";
 		return (CMD_ERROR);
 	}
-
 	if (argc > 2) {
 		for (i = 2; i < argc; i++)
 			handle_uboot_env_var(action, argv[i]);
@@ -660,7 +640,6 @@ command_ubenv(int argc, char *argv[])
 			handle_uboot_env_var(action, var);
 		}
 	}
-
 	return (CMD_OK);
 }
 COMMAND_SET(ubenv, "ubenv", "show or import U-Boot env vars", command_ubenv);
@@ -680,4 +659,55 @@ command_fdt(int argc, char *argv[])
 }
 
 COMMAND_SET(fdt, "fdt", "flattened device tree handling", command_fdt);
+#endif
+
+#ifdef LOADER_ZFS_SUPPORT
+COMMAND_SET(lszfs, "lszfs", "list child datasets of a zfs dataset",
+    command_lszfs);
+
+static int
+command_lszfs(int argc, char *argv[])
+{
+	int err;
+
+	if (argc != 2) {
+		command_errmsg = "wrong number of arguments";
+		return (CMD_ERROR);
+	}
+	err = zfs_list(argv[1]);
+	if (err != 0) {
+		command_errmsg = strerror(err);
+		return (CMD_ERROR);
+	}
+	return (CMD_OK);
+}
+
+COMMAND_SET(reloadbe, "reloadbe", "refresh the list of ZFS Boot Environments",
+	    command_reloadbe);
+
+static int
+command_reloadbe(int argc, char *argv[])
+{
+	int err;
+	char *root;
+
+	if (argc > 2) {
+		command_errmsg = "wrong number of arguments";
+		return (CMD_ERROR);
+	}
+	if (argc == 2) {
+		err = zfs_bootenv(argv[1]);
+	} else {
+		root = getenv("zfs_be_root");
+		if (root == NULL) {
+			return (CMD_OK);
+		}
+		err = zfs_bootenv(root);
+	}
+	if (err != 0) {
+		command_errmsg = strerror(err);
+		return (CMD_ERROR);
+	}
+	return (CMD_OK);
+}
 #endif

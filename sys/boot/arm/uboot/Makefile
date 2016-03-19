@@ -38,6 +38,11 @@ LOADER_FDT_SUPPORT=	yes
 .else
 LOADER_FDT_SUPPORT=	no
 .endif
+.if ${MK_ZFS} != "no"
+LOADER_ZFS_SUPPORT=	yes
+.else
+LOADER_ZFS_SUPPORT=	no
+.endif
 
 .if ${LOADER_DISK_SUPPORT} == "yes"
 CFLAGS+=	-DLOADER_DISK_SUPPORT
@@ -77,6 +82,14 @@ LIBUBOOT_FDT=	${.OBJDIR}/../../uboot/fdt/libuboot_fdt.a
 LIBFDT=		${.OBJDIR}/../../fdt/libfdt.a
 .endif
 
+.if ${LOADER_ZFS_SUPPORT} == "yes"
+CFLAGS+=	-DLOADER_ZFS_SUPPORT
+LIBZFSBOOT=	${.OBJDIR}/../../zfs/libzfsboot.a
+
+CFLAGS+=	-I${.CURDIR}/../../zfs
+CFLAGS+=	-I${.CURDIR}/../../../cddl/boot/zfs
+.endif
+
 CFLAGS+=	-DNETIF_OPEN_CLOSE_ONCE
 
 .if ${MK_FORTH} != "no"
@@ -114,8 +127,8 @@ CFLAGS+=	-I${.CURDIR}/../../../../lib/libstand/
 # clang doesn't understand %D as a specifier to printf
 NO_WERROR.clang=
 
-DPADD=		${LIBFICL} ${LIBUBOOT} ${LIBFDT} ${LIBUBOOT_FDT} ${LIBSTAND}
-LDADD=		${LIBFICL} ${LIBUBOOT} ${LIBFDT} ${LIBUBOOT_FDT} -lstand
+DPADD=		${LIBFICL} ${LIBUBOOT} ${LIBFDT} ${LIBUBOOT_FDT} ${LIBZFSBOOT} ${LIBSTAND}
+LDADD=		${LIBFICL} ${LIBUBOOT} ${LIBFDT} ${LIBUBOOT_FDT} ${LIBZFSBOOT} -lstand
 
 OBJS+=  ${SRCS:N*.h:R:S/$/.o/g}
 

@@ -49,6 +49,8 @@ struct uboot_devdesc
  */
 #define	PKTALIGN	32
 
+#define	UB_MAXNAMELEN	128
+
 int uboot_getdev(void **vdev, const char *devspec, const char **path);
 char *uboot_fmtdev(void *vdev);
 int uboot_setcurrdev(struct env_var *ev, int flags, const void *value);
@@ -72,6 +74,3 @@ struct file_format;
 extern struct file_format uboot_elf;
 
 void reboot(void);
-
-int uboot_diskgetunit(int type, int type_unit);
-

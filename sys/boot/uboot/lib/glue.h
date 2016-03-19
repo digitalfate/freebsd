@@ -92,14 +92,14 @@ const char *ub_env_enum(const char *);
 
 /* devices */
 int ub_dev_enum(void);
-int ub_dev_open(int);
-int ub_dev_close(int);
-int ub_dev_read(int, void *, lbasize_t, lbastart_t, lbasize_t *);
-int ub_dev_send(int, void *, int);
-int ub_dev_recv(int, void *, int, int *);
-struct device_info *ub_dev_get(int);
+int ub_dev_open(struct device_info *);
+int ub_dev_close(struct device_info *);
+int ub_dev_read(struct device_info *, void *, lbasize_t, lbastart_t, lbasize_t *);
+int ub_dev_send(struct device_info *, void *, int);
+int ub_dev_recv(struct device_info *, void *, int, int *);
+struct device_info *ub_dev_get(int, int *);
 
-void ub_dump_di(int);
+void ub_dump_di(struct device_info *);
 void ub_dump_si(struct sys_info *);
 char *ub_mem_type(int);
 char *ub_stor_type(int);

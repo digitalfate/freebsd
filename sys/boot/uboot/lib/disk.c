@@ -2,6 +2,7 @@
  * Copyright (c) 2008 Semihalf, Rafal Jaworowski
  * Copyright (c) 2009 Semihalf, Piotr Ziecik
  * Copyright (c) 2012 Andrey V. Elsukov <ae@FreeBSD.org>
+ * Copyright (c) 2016 Vladimir Belian <fate10@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -46,24 +47,18 @@ __FBSDID("$FreeBSD$");
 #include "libuboot.h"
 
 #define stor_printf(fmt, args...) do {			\
-    printf("%s%d: ", dev->d_dev->dv_name, dev->d_unit);	\
-    printf(fmt, ##args);				\
+	printf("%s%d: ", dev->d_dev->dv_name, dev->d_unit);	\
+	printf(fmt, ##args);				\
 } while (0)
 
 #ifdef DEBUG
 #define debugf(fmt, args...) do { printf("%s(): ", __func__);	\
-    printf(fmt,##args); } while (0)
+	printf(fmt,##args); } while (0)
 #else
 #define debugf(fmt, args...)
 #endif
 
-static struct {
-	int		opened;	/* device is opened */
-	int		handle;	/* storage device handle */
-	int		type;	/* storage type */
-	off_t		blocks;	/* block count */
-	u_int		bsize;	/* block size */
-} stor_info[UB_MAX_DEV];
+static struct device_info *stor_info[UB_MAX_DEV];
 
 #define	SI(dev)		(stor_info[(dev)->d_unit])
 
@@ -95,38 +90,19 @@ struct devsw uboot_storage = {
 static int
 stor_init(void)
 {
-	struct device_info *di;
-	int i;
+	int i = 0;
 
-	if (devs_no == 0) {
+	if (ub_dev_enum() == 0) {
 		printf("No U-Boot devices! Really enumerated?\n");
 		return (-1);
 	}
-
-	for (i = 0; i < devs_no; i++) {
-		di = ub_dev_get(i);
-		if ((di != NULL) && (di->type & DEV_TYP_STOR)) {
-			if (stor_info_no >= UB_MAX_DEV) {
-				printf("Too many storage devices: %d\n",
-				    stor_info_no);
-				return (-1);
-			}
-			stor_info[stor_info_no].handle = i;
-			stor_info[stor_info_no].opened = 0;
-			stor_info[stor_info_no].type = di->type;
-			stor_info[stor_info_no].blocks =
-			    di->di_stor.block_count;
-			stor_info[stor_info_no].bsize =
-			    di->di_stor.block_size;
-			stor_info_no++;
-		}
-	}
+	while ((stor_info[stor_info_no++] = ub_dev_get(DEV_TYP_STOR, &i)) != NULL) ;
+	stor_info_no--;
 
 	if (!stor_info_no) {
 		debugf("No storage devices\n");
 		return (-1);
 	}
-
 	debugf("storage devices found: %d\n", stor_info_no);
 	return (0);
 }
@@ -137,8 +113,9 @@ stor_cleanup(void)
 	int i;
 
 	for (i = 0; i < stor_info_no; i++)
-		if (stor_info[i].opened > 0)
-			ub_dev_close(stor_info[i].handle);
+		if (stor_info[i]->state == DEV_STA_OPEN)
+			ub_dev_close(stor_info[i]);
+			
 	disk_cleanup(&uboot_storage);
 }
 
@@ -150,18 +127,20 @@ stor_strategy(void *devdata, int rw, daddr_t blk, size_t size, char *buf,
 	daddr_t bcount;
 	int err;
 
+	if (dev->d_unit < 0 || dev->d_unit >= stor_info_no)
+		return (EIO);
+
 	if (rw != F_READ) {
 		stor_printf("write attempt, operation not supported!\n");
 		return (EROFS);
 	}
-
-	if (size % SI(dev).bsize) {
+	if (size % SI(dev)->di_stor.block_size) {
 		stor_printf("size=%zu not multiple of device "
-		    "block size=%d\n",
-		    size, SI(dev).bsize);
+		        "block size=%d\n",
+		        size, (int) SI(dev)->di_stor.block_size);
 		return (EIO);
 	}
-	bcount = size / SI(dev).bsize;
+	bcount = size / SI(dev)->di_stor.block_size;
 	if (rsize)
 		*rsize = 0;
 
@@ -193,17 +172,17 @@ stor_opendev(struct disk_devdesc *dev)
 	if (dev->d_unit < 0 || dev->d_unit >= stor_info_no)
 		return (EIO);
 
-	if (SI(dev).opened == 0) {
-		err = ub_dev_open(SI(dev).handle);
+	if (SI(dev)->state == DEV_STA_CLOSED) {
+		err = ub_dev_open(SI(dev));
 		if (err != 0) {
 			stor_printf("device open failed with error=%d, "
-			    "handle=%d\n", err, SI(dev).handle);
+				"unit=%d\n", err, dev->d_unit);
 			return (ENXIO);
 		}
-		SI(dev).opened++;
+//		SI(dev).opened++;
 	}
-	return (disk_open(dev, SI(dev).blocks * SI(dev).bsize,
-	    SI(dev).bsize, 0));
+	return (disk_open(dev, SI(dev)->di_stor.block_count * SI(dev)->di_stor.block_size,
+		SI(dev)->di_stor.block_size, 0));
 }
 
 static int
@@ -223,17 +202,15 @@ stor_readdev(struct disk_devdesc *dev, daddr_t blk, size_t size, char *buf)
 
 	debugf("reading blk=%d size=%d @ 0x%08x\n", (int)blk, size, (uint32_t)buf);
 
-	err = ub_dev_read(SI(dev).handle, buf, size, blk, &real_size);
+	err = ub_dev_read(SI(dev), buf, size, blk, &real_size);
 	if (err != 0) {
 		stor_printf("read failed, error=%d\n", err);
 		return (EIO);
 	}
-
 	if (real_size != size) {
 		stor_printf("real size != size\n");
 		err = EIO;
 	}
-
 	return (err);
 }
 
@@ -250,7 +227,7 @@ stor_print(int verbose)
 		dev.d_slice = -1;
 		dev.d_partition = -1;
 		sprintf(line, "\tdisk%d (%s)\n", i,
-		    ub_stor_type(SI(&dev).type));
+		        ub_stor_type(SI(&dev)->type));
 		pager_output(line);
 		if (stor_opendev(&dev) == 0) {
 			sprintf(line, "\tdisk%d", i);
@@ -266,39 +243,19 @@ stor_ioctl(struct open_file *f, u_long cmd, void *data)
 	struct disk_devdesc *dev;
 
 	dev = (struct disk_devdesc *)f->f_devdata;
+	if (dev->d_unit < 0 || dev->d_unit >= stor_info_no)
+		return (EIO);
+
 	switch (cmd) {
 	case DIOCGSECTORSIZE:
-		*(u_int *)data = SI(dev).bsize;
+		*(u_int *)data = SI(dev)->di_stor.block_size;
 		break;
 	case DIOCGMEDIASIZE:
-		*(off_t *)data = SI(dev).bsize * SI(dev).blocks;
+		*(off_t *)data =
+			SI(dev)->di_stor.block_size * SI(dev)->di_stor.block_count;
 		break;
 	default:
 		return (ENOTTY);
 	}
 	return (0);
-}
-
-
-/*
- * Return the device unit number for the given type and type-relative unit
- * number.
- */
-int
-uboot_diskgetunit(int type, int type_unit)
-{
-	int local_type_unit;
-	int i;
-
-	local_type_unit = 0;
-	for (i = 0; i < stor_info_no; i++) {
-		if ((stor_info[i].type & type) == type) {
-			if (local_type_unit == type_unit) {
-				return (i);
-			}
-			local_type_unit++;
-		}
-	}
-
-	return (-1);
 }

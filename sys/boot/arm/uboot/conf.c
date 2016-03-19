@@ -31,6 +31,9 @@ __FBSDID("$FreeBSD$");
 #include <stand.h>
 #include "bootstrap.h"
 #include "libuboot.h"
+#if defined(LOADER_ZFS_SUPPORT)
+#include <libzfs.h>
+#endif
 
 #if defined(LOADER_NET_SUPPORT)
 #include "dev_net.h"
@@ -43,10 +46,16 @@ struct devsw *devsw[] = {
 #if defined(LOADER_NET_SUPPORT)
 	&netdev,
 #endif
+#if defined(LOADER_ZFS_SUPPORT)
+	&zfs_dev,
+#endif
 	NULL
 };
 
 struct fs_ops *file_system[] = {
+#if defined(LOADER_ZFS_SUPPORT)
+	&zfs_fsops,
+#endif
 #if defined(LOADER_UFS_SUPPORT)
 	&ufs_fsops,
 #endif

@@ -1,5 +1,6 @@
 /*-
  * Copyright (c) 2007-2008 Semihalf, Rafal Jaworowski <raj@semihalf.com>
+ * Copyright (c) 2016 Vladimir Belian <fate10@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -241,12 +242,20 @@ ub_get_timer(unsigned long base)
  ***************************************************************************/
 
 static struct device_info devices[UB_MAX_DEV];
+static int devs_num = -1;
 
 struct device_info *
-ub_dev_get(int i)
+ub_dev_get(int type, int *i)
 {
 
-	return ((i < 0 || i >= UB_MAX_DEV) ? NULL : &devices[i]);
+	if ((i == NULL) || (*i < 0))
+		return (NULL);
+		
+	while (*i < devs_num)
+		if (devices[(*i)++].type & type)
+			return (&devices[*i - 1]);
+
+	return (NULL);
 }
 
 /*
@@ -259,30 +268,24 @@ int
 ub_dev_enum(void)
 {
 	struct device_info *di;
-	int n = 0;
+
+	if (devs_num != -1)
+		return (devs_num);
 
 	memset(&devices, 0, sizeof(struct device_info) * UB_MAX_DEV);
 	di = &devices[0];
 
-	if (!syscall(API_DEV_ENUM, NULL, di))
-		return (0);
-
-	while (di->cookie != NULL) {
-
-		if (++n >= UB_MAX_DEV)
-			break;
+	for (devs_num = 0; syscall(API_DEV_ENUM, NULL, di);) {
+		if ((di->cookie == NULL) || (++devs_num >= UB_MAX_DEV))
+			return (devs_num);
 
 		/* take another device_info */
 		di++;
 
 		/* pass on the previous cookie */
-		di->cookie = devices[n - 1].cookie;
-
-		if (!syscall(API_DEV_ENUM, NULL, di))
-			return (0);
+		di->cookie = devices[devs_num - 1].cookie;
 	}
-
-	return (n);
+	return (devs_num = 0);
 }
 
 /*
@@ -291,82 +294,37 @@ ub_dev_enum(void)
  * returns:	0 when OK, err otherwise
  */
 int
-ub_dev_open(int handle)
+ub_dev_open(struct device_info *di)
 {
-	struct device_info *di;
 	int err = 0;
 
-	if (handle < 0 || handle >= UB_MAX_DEV)
-		return (API_EINVAL);
-
-	di = &devices[handle];
-	if (!syscall(API_DEV_OPEN, &err, di))
-		return (-1);
-
-	return (err);
+	return ((!syscall(API_DEV_OPEN, &err, di)) ? -1 : err);
 }
 
 int
-ub_dev_close(int handle)
-{
-	struct device_info *di;
-
-	if (handle < 0 || handle >= UB_MAX_DEV)
-		return (API_EINVAL);
-
-	di = &devices[handle];
-	if (!syscall(API_DEV_CLOSE, NULL, di))
-		return (-1);
-
-	return (0);
-}
-
-/*
- * Validates device for read/write, it has to:
- *
- * - have sane handle
- * - be opened
- *
- * returns:	0/1 accordingly
- */
-static int
-dev_valid(int handle)
+ub_dev_close(struct device_info *di)
 {
 
-	if (handle < 0 || handle >= UB_MAX_DEV)
-		return (0);
-
-	if (devices[handle].state != DEV_STA_OPEN)
-		return (0);
-
-	return (1);
+	return ((!syscall(API_DEV_CLOSE, NULL, di)) ? -1 : 0);
 }
 
 static int
-dev_stor_valid(int handle)
+dev_valid(struct device_info *di, int type)
 {
 
-	if (!dev_valid(handle))
-		return (0);
-
-	if (!(devices[handle].type & DEV_TYP_STOR))
-		return (0);
-
-	return (1);
+	return (((di->state == DEV_STA_OPEN) && (di->type & type)) ? 1 : 0);
 }
 
 int
-ub_dev_read(int handle, void *buf, lbasize_t len, lbastart_t start,
-    lbasize_t *rlen)
+ub_dev_read(struct device_info *di, void *buf, lbasize_t len,
+	lbastart_t start, lbasize_t *rlen)
 {
-	struct device_info *di;
 	lbasize_t act_len;
 	int err = 0;
 
-	if (!dev_stor_valid(handle))
+	if (!dev_valid(di, DEV_TYP_STOR))
 		return (API_ENODEV);
 
-	di = &devices[handle];
 	if (!syscall(API_DEV_READ, &err, di, buf, &len, &start, &act_len))
 		return (API_ESYSC);
 
@@ -376,29 +334,14 @@ ub_dev_read(int handle, void *buf, lbasize_t len, lbastart_t start,
 	return (err);
 }
 
-static int
-dev_net_valid(int handle)
-{
-
-	if (!dev_valid(handle))
-		return (0);
-
-	if (devices[handle].type != DEV_TYP_NET)
-		return (0);
-
-	return (1);
-}
-
 int
-ub_dev_recv(int handle, void *buf, int len, int *rlen)
+ub_dev_recv(struct device_info *di, void *buf, int len, int *rlen)
 {
-	struct device_info *di;
 	int err = 0, act_len;
 
-	if (!dev_net_valid(handle))
+	if (!dev_valid(di, DEV_TYP_NET))
 		return (API_ENODEV);
 
-	di = &devices[handle];
 	if (!syscall(API_DEV_READ, &err, di, buf, &len, &act_len))
 		return (API_ESYSC);
 
@@ -409,15 +352,13 @@ ub_dev_recv(int handle, void *buf, int len, int *rlen)
 }
 
 int
-ub_dev_send(int handle, void *buf, int len)
+ub_dev_send(struct device_info *di, void *buf, int len)
 {
-	struct device_info *di;
 	int err = 0;
 
-	if (!dev_net_valid(handle))
+	if (!dev_valid(di, DEV_TYP_NET))
 		return (API_ENODEV);
 
-	di = &devices[handle];
 	if (!syscall(API_DEV_WRITE, &err, di, buf, &len))
 		return (API_ESYSC);
 
@@ -463,12 +404,10 @@ ub_mem_type(int flags)
 }
 
 void
-ub_dump_di(int handle)
+ub_dump_di(struct device_info *di)
 {
-	struct device_info *di = ub_dev_get(handle);
 	int i;
 
-	printf("device info (%d):\n", handle);
 	printf("  cookie\t= 0x%p\n", di->cookie);
 	printf("  type\t\t= 0x%08x\n", di->type);
 

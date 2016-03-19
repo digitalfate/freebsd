@@ -20,6 +20,19 @@ SRCS+=	disk.c
 CFLAGS+= -DLOADER_DISK_SUPPORT
 .endif
 
+.if ${MK_ZFS} != "no"
+LOADER_ZFS_SUPPORT=	yes
+
+CFLAGS+=	-I${.CURDIR}/../../zfs
+CFLAGS+=	-I${.CURDIR}/../../../cddl/boot/zfs
+.else
+LOADER_ZFS_SUPPORT=	no
+.endif
+
+.if ${LOADER_ZFS_SUPPORT} == "yes"
+CFLAGS+= -DLOADER_ZFS_SUPPORT
+.endif
+
 .if ${MK_FDT} != "no"
 LOADER_FDT_SUPPORT=	yes
 .else
