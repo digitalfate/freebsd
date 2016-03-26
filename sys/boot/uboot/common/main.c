@@ -192,7 +192,7 @@ search_devsw(int type)
 {
 	int i;
 
-	for (i = 0; devsw[i] != NULL; i++) 
+	for (i = 0; devsw[i] != NULL; i++)
 		if (devsw[i]->dv_type == type)
 			return (devsw[i]);
 	return (NULL);
