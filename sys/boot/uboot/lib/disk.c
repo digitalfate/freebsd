@@ -179,7 +179,6 @@ stor_opendev(struct disk_devdesc *dev)
 				"unit=%d\n", err, dev->d_unit);
 			return (ENXIO);
 		}
-//		SI(dev).opened++;
 	}
 	return (disk_open(dev, SI(dev)->di_stor.block_count * SI(dev)->di_stor.block_size,
 		SI(dev)->di_stor.block_size, 0));
