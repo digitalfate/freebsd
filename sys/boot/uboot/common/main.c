@@ -106,7 +106,7 @@ uboot_zfs_probe(void)
 		if (zfs_probe_dev(dname, &id) == 0) {
 			if (id == 0)
 				continue;
-				
+
 			/* skip pool guid duplicates if found */
 			for (p = 0; (p < maxp) && (zfs_pools[p] != id); p++) ;
 			if (p < maxp)
@@ -284,7 +284,7 @@ print_disk_probe_info(struct uboot_devdesc dev)
 {
 
 	printf("  Checking unit=%d ", dev.d_unit);
-	
+
 	if (dev.d_disk.slice > 0)
 		printf("slice=%d ", dev.d_disk.slice);
 	else
@@ -457,7 +457,7 @@ main(int argc, char **argv)
 	/*
 	 * March through the device switch probing for things.
 	 */
-	for (i = 0; devsw[i] != NULL; i++) 
+	for (i = 0; devsw[i] != NULL; i++)
 		if (devsw[i]->dv_init != NULL)
 			(devsw[i]->dv_init)();
 
@@ -484,7 +484,7 @@ main(int argc, char **argv)
 
 	env_setenv("currdev", EV_VOLATILE, ldev, uboot_setcurrdev, env_nounset);
 	env_setenv("loaddev", EV_VOLATILE, ldev, env_noset, env_nounset);
-	
+
 	setenv("LINES", "24", 1);		/* optional */
 	setenv("prompt", "loader>", 1);
 

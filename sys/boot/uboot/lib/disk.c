@@ -115,7 +115,7 @@ stor_cleanup(void)
 	for (i = 0; i < stor_info_no; i++)
 		if (stor_info[i]->state == DEV_STA_OPEN)
 			ub_dev_close(stor_info[i]);
-			
+
 	disk_cleanup(&uboot_storage);
 }
 

@@ -250,7 +250,7 @@ ub_dev_get(int type, int *i)
 
 	if ((i == NULL) || (*i < 0))
 		return (NULL);
-		
+
 	while (*i < devs_num)
 		if (devices[(*i)++].type & type)
 			return (&devices[*i - 1]);
